@@ -6,16 +6,17 @@ import (
 	"testing"
 
 	"github.com/pkg/errors"
+	"github.com/suborbital/grav/testutil"
 )
 
 type generic struct{}
 
 // Run runs a generic job
-func (g generic) Run(job Job, do DoFunc) (interface{}, error) {
+func (g generic) Run(job Job, ctx *Ctx) (interface{}, error) {
 	if job.String() == "first" {
-		return do(NewJob("generic", "second")), nil
+		return ctx.Do(NewJob("generic", "second")), nil
 	} else if job.String() == "second" {
-		return do(NewJob("generic", "last")), nil
+		return ctx.Do(NewJob("generic", "last")), nil
 	} else if job.String() == "fail" {
 		return nil, errors.New("error!")
 	}
@@ -23,7 +24,7 @@ func (g generic) Run(job Job, do DoFunc) (interface{}, error) {
 	return job.String(), nil
 }
 
-func (g generic) OnStart() error {
+func (g generic) OnChange(change ChangeEvent) error {
 	return nil
 }
 
@@ -55,13 +56,13 @@ type input struct {
 type math struct{}
 
 // Run runs a math job
-func (g math) Run(job Job, do DoFunc) (interface{}, error) {
+func (g math) Run(job Job, ctx *Ctx) (interface{}, error) {
 	in := job.Data().(input)
 
 	return in.First + in.Second, nil
 }
 
-func (g math) OnStart() error {
+func (g math) OnChange(change ChangeEvent) error {
 	return nil
 }
 
@@ -123,4 +124,37 @@ func TestHiveResultThenDo(t *testing.T) {
 	// poor man's async testing
 	<-wait
 	<-wait
+}
+
+type prewarmRunnable struct {
+	counter *testutil.AsyncCounter
+}
+
+func (p *prewarmRunnable) Run(job Job, ctx *Ctx) (interface{}, error) {
+	return nil, nil
+}
+
+func (p *prewarmRunnable) OnChange(change ChangeEvent) error {
+	if change == ChangeTypeStart {
+		p.counter.Count()
+	}
+
+	return nil
+}
+
+func TestPreWarmWorker(t *testing.T) {
+	counter := testutil.NewAsyncCounter(10)
+
+	runnable := &prewarmRunnable{
+		counter: counter,
+	}
+
+	h := New()
+	h.Handle("prewarm", runnable, PoolSize(3), PreWarm())
+
+	// checking to see if the prewarmRunnable's OnChange function is called
+	// without ever sending it a job (see Runnable above)
+	if err := counter.Wait(3, 1); err != nil {
+		t.Error(err)
+	}
 }

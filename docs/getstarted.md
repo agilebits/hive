@@ -9,25 +9,25 @@ There are some more complicated things you can do with Runnables:
 type recursive struct{}
 
 // Run runs a recursive job
-func (r recursive) Run(job hive.Job, do hive.DoFunc) (interface{}, error) {
+func (r recursive) Run(job hive.Job, ctx *hive.Ctx) (interface{}, error) {
 	fmt.Println("doing job:", job.String())
 
 	if job.String() == "first" {
-		return do(hive.NewJob("recursive", "second")), nil
+		return ctx.Do(hive.NewJob("recursive", "second")), nil
 	} else if job.String() == "second" {
-		return do(hive.NewJob("recursive", "last")), nil
+		return ctx.Do(hive.NewJob("recursive", "last")), nil
 	}
 
 	return fmt.Sprintf("finished %s", job.String()), nil
 }
 
-func (r recursive) OnStart() error {
+func (r recursive) OnChange(change hive.ChangeEvent) error {
 	return nil
 }
 ```
-The `hive.DoFunc` that you see there is a way for your Runnable to, well, run more things!
+The `hive.Ctx` you see there is the job context, and one of the things it can do is run more things!
 
-Calling the `DoFunc` will schedule another job to be executed and give you a `Result`. If you return a `Result` from `Run`, then the caller will recursively recieve that `Result` when they call `Then()`!
+Calling `ctx.Do` will schedule another job to be executed and give you a `Result`. If you return a `Result` from `Run`, then the caller will recursively recieve that `Result` when they call `Then()`!
 
 For example:
 ```golang
@@ -72,9 +72,9 @@ A hive `Group` is a set of `Result`s that belong together. If you're familiar wi
 ```golang
 grp := hive.NewGroup()
 
-grp.Add(do(hive.NewJob("recursive", "first")))
-grp.Add(do(hive.NewJob("generic", "group work")))
-grp.Add(do(hive.NewJob("generic", "group work")))
+grp.Add(ctx.Do(hive.NewJob("recursive", "first")))
+grp.Add(ctx.Do(hive.NewJob("generic", "group work")))
+grp.Add(ctx.Do(hive.NewJob("generic", "group work")))
 
 if err := grp.Wait(); err != nil {
 	log.Fatal(err)
@@ -121,13 +121,19 @@ When `TimeoutSeconds` is set and a job executes for longer than the provided num
 
 ### Advanced Runnables
 
-The `Runnable` interface defines an `OnStart` function which gives the Runnable the ability to prepare itself for incoming jobs. For example, when a Runnable is registered with a pool size greater than 1, the Runnable may need to provision resources for itself to enable handling jobs concurrently, and `OnStart` will be called once for each of those workers. Our [wasm implementation](https://github.com/suborbital/hive-wasm/blob/master/wasm/wasmrunnable.go) is a good example of this. 
+The `Runnable` interface defines an `OnChange` function which gives the Runnable a chance to prepare itself for changes to the worker running it. For example, when a Runnable is registered with a pool size greater than 1, the Runnable may need to provision resources for itself to enable handling jobs concurrently, and `OnChange` will be called once each time a new worker starts up. Our [Wasm implementation](https://github.com/suborbital/hive-wasm/blob/master/wasm/wasmrunnable.go) is a good example of this. 
 
-Most Runnables can return `nil` from this function, however returning an error will cause the worker start to be paused and retried until the required pool size has been created. The number of seconds between retries (default 3) and the maximum number of retries (default 5) can be configured when registering a Runnable:
+Most Runnables can return `nil` from this function, however returning an error will cause the worker start to be paused and retried until the required pool size has been acheived. The number of seconds between retries (default 3) and the maximum number of retries (default 5) can be configured when registering a Runnable:
 ```golang
 doBad := h.Handle("badRunner", badRunner{}, hive.RetrySeconds(1), hive.MaxRetries(10))
 ```
 Any error from a failed worker will be returned to the first job that is attempted for that Runnable.
+
+### Pre-warming
+When a Runnable is mounted, it is simply registered as available to receive work. The Runnable is not actually invoked until the first job of the given type is received. For basic Runnables, this is normally fine, but for Runnables who use the `OnChange` method to provision resources, this can cause the first job to be slow. The `PreWarm` option is available to allow Runnables to be started as soon as they are mounted, rather than waiting for the first job. This mitigates cold-starts when anything expensive is needed at startup.
+```
+doExpensive := h.Handle("expensive", expensiveRunnable{}, hive.PreWarm())
+```
 
 ### Shortcuts
 
@@ -140,7 +146,7 @@ type input struct {
 type math struct{}
 
 // Run runs a math job
-func (g math) Run(job hive.Job, do hive.DoFunc) (interface{}, error) {
+func (g math) Run(job hive.Job, ctx *hive.Ctx) (interface{}, error) {
 	in := job.Data().(input)
 
 	return in.First + in.Second, nil
@@ -160,4 +166,4 @@ The `Handle` function returns an optional helper function. Instead of passing a 
 
 Hive can integrate with [Grav](https://github.com/suborbital/grav), which is the decentralized message bus developed as part of the Suborbital Development Platform. Read about the integration on [the grav documentation page.](./grav.md)
 
-Hive provides the building blocks for scalable asynchronous systems. This should be everything you need to help you improve the performance of your application. When you are looking to take advantage of Hive's other features, check out its [FaaS](./faas.md) and [WASM](./wasm.md) capabilities!
+Hive provides the building blocks for scalable asynchronous systems. This should be everything you need to help you improve the performance of your application. When you are looking to take advantage of Hive's other features, check out its [FaaS](./faas.md) and [Wasm](./wasm.md) capabilities!
